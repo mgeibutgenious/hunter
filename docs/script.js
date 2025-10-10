@@ -1,16 +1,13 @@
 /***** Config *****/
-const INPUT_SIZE = 224;       // not used for saving; only if you later add ML
 const LABELS = ['Snyders', 'Big Lot', 'C Press'];
-
-// Burst settings
-const BURST_COUNT = 5;        // number of frames per burst
-const BURST_INTERVAL_MS = 150; // delay between frames in a burst
+const SNYDERS_SUBS = ['C','D','E']; // appears only when Snyders is active
 
 /***** State *****/
 let videoEl = null;
 let baseDirHandle = null;
-let currentLabel = null;
-let burstCounter = 0; // shown in UI; increments each burst (1,2,3,...)
+let currentLabel = null;   // 'Snyders' | 'Big Lot' | 'C Press'
+let currentSub   = null;   // 'C' | 'D' | 'E' | null  (only used for Snyders)
+let shotCounter  = 0;      // UI counter (1,2,3,...)
 
 /***** Camera *****/
 async function setupCamera() {
@@ -22,6 +19,21 @@ async function setupCamera() {
   await new Promise(res => el.onloadedmetadata = () => res());
   await el.play();
   videoEl = el;
+  document.getElementById('status').textContent = 'カメラ準備完了';
+}
+
+/***** Folder selection *****/
+async function chooseBaseFolder() {
+  if (!window.showDirectoryPicker) {
+    document.getElementById('saveStatus').textContent =
+      'ブラウザがフォルダ保存に未対応です（Chrome/Edge 推奨）。ダウンロード保存に切替えます。';
+    document.getElementById('folderChosen').textContent = 'ダウンロード保存';
+    baseDirHandle = null;
+    return;
+  }
+  baseDirHandle = await window.showDirectoryPicker();
+  document.getElementById('folderChosen').textContent = '選択済み';
+  document.getElementById('saveStatus').textContent   = '保存先を設定しました。';
 }
 
 /***** Helpers *****/
@@ -35,7 +47,6 @@ function yyyymmdd_HHMMSS() {
   const ss   = String(d.getSeconds()).padStart(2,'0');
   return `${yyyy}${mm}${dd}_${hh}${mi}${ss}`;
 }
-const pad3 = n => String(n).padStart(3,'0');
 
 function captureFrameToBlob() {
   return new Promise((resolve) => {
@@ -61,133 +72,134 @@ async function writeBlobTo(dirHandle, filename, blob) {
 
 function downloadFallback(filename, blob) {
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  const a = document.createElement('a'); a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
-}
-
-/***** Folder selection *****/
-async function chooseBaseFolder() {
-  if (!window.showDirectoryPicker) {
-    document.getElementById('saveStatus').textContent =
-      'ブラウザがフォルダ保存に未対応です（Chrome/Edge 推奨）。ダウンロード保存に切替えます。';
-    document.getElementById('folderChosen').textContent = 'ダウンロード保存';
-    baseDirHandle = null;
-    return;
-  }
-  baseDirHandle = await window.showDirectoryPicker();
-  document.getElementById('folderChosen').textContent = '選択済み';
-  document.getElementById('saveStatus').textContent   = '保存先を設定しました。';
 }
 
 /***** Label selection *****/
 function setActiveLabel(label) {
   currentLabel = label;
   document.getElementById('activeLabel').textContent = `選択: ${label}`;
-
-  // UI highlight for buttons
-  for (const [id, name] of [['btnSnyders','Snyders'],['btnBigLot','Big Lot'],['btnCPress','C Press']]) {
+  // highlight
+  const map = { Snyders:'btnSnyders', 'Big Lot':'btnBigLot', 'C Press':'btnCPress' };
+  for (const [lbl, id] of Object.entries(map)) {
     const b = document.getElementById(id);
-    if (name === label) b.classList.add('selected'); else b.classList.remove('selected');
+    if (lbl === label) b.classList.add('selected'); else b.classList.remove('selected');
+  }
+  // Sub options
+  const subRow = document.getElementById('snydersSubRow');
+  if (label === 'Snyders') {
+    subRow.style.display = '';
+  } else {
+    subRow.style.display = 'none';
+    currentSub = null;
+    document.getElementById('activeSub').textContent = 'サブ: なし';
   }
 }
 
-/***** Burst capture *****/
-async function burstCapture() {
+function setActiveSub(sub) {
+  currentSub = sub; // 'C' | 'D' | 'E'
+  document.getElementById('activeSub').textContent = `サブ: ${sub}`;
+  // small buttons highlight
+  const ids = ['btnC','btnD','btnE'];
+  const val = { btnC:'C', btnD:'D', btnE:'E' };
+  ids.forEach(id=>{
+    const el = document.getElementById(id);
+    if (val[id] === sub) el.classList.add('selected'); else el.classList.remove('selected');
+  });
+}
+
+/***** Single-shot save *****/
+async function saveOneShot() {
   const statusEl = document.getElementById('saveStatus');
   statusEl.textContent = '';
 
   if (!videoEl) {
-    statusEl.textContent = 'カメラが未起動です。「▶️」を押してください。';
+    statusEl.textContent = 'カメラが未起動です。';
     return;
   }
   if (!currentLabel) {
-    statusEl.textContent = 'ラベルを選択してください（Snyders / Big Lot / C Press）。';
+    statusEl.textContent = 'ラベルを選択してください。';
+    return;
+  }
+  if (currentLabel === 'Snyders' && !currentSub) {
+    statusEl.textContent = 'Snyders のサブ（C/D/E）を選択してください。';
     return;
   }
 
-  // Increment burst counter and update UI (first burst -> 1)
-  burstCounter += 1;
-  document.getElementById('burstCount').textContent = String(burstCounter);
+  const blob = await captureFrameToBlob();
+  const ts   = yyyymmdd_HHMMSS();
 
-  // Make sure the per-label folder exists (or prepare fallback)
-  let labelDir = null;
-  if (baseDirHandle) {
-    const root = baseDirHandle;
-    labelDir = await ensureSubdir(root, currentLabel);
-  }
+  // Folder path + filename
+  let folderParts = [currentLabel];
+  if (currentLabel === 'Snyders' && currentSub) folderParts.push(currentSub);
 
-  const timestampBase = yyyymmdd_HHMMSS();
-  let saved = 0;
+  const filename = `${ts}_${currentLabel}${currentSub ? '_' + currentSub : ''}.png`;
 
-  for (let i = 0; i < BURST_COUNT; i++) {
-    /* eslint-disable no-await-in-loop */
-    const blob = await captureFrameToBlob();
-
-    const filename = `${timestampBase}_${currentLabel}_${pad3(i+1)}.png`;
-    try {
-      if (labelDir) {
-        await writeBlobTo(labelDir, filename, blob);
-      } else {
-        downloadFallback(`${currentLabel}_${filename}`, blob);
-      }
-      saved++;
-      statusEl.textContent = `保存中… ${saved}/${BURST_COUNT}`;
-    } catch (e) {
-      statusEl.textContent = `保存エラー: ${e.message || e}`;
+  try {
+    if (baseDirHandle) {
+      // Create nested directories
+      let dir = baseDirHandle;
+      for (const part of folderParts) dir = await ensureSubdir(dir, part);
+      await writeBlobTo(dir, filename, blob);
+      statusEl.textContent = `保存しました: ${folderParts.join('/')}/${filename}`;
+    } else {
+      // Fallback: encode path in filename
+      downloadFallback(`${folderParts.join('_')}_${filename}`, blob);
+      statusEl.textContent = `ダウンロードしました: ${folderParts.join('/')}/${filename}`;
     }
 
-    if (i < BURST_COUNT - 1) {
-      await new Promise(r => setTimeout(r, BURST_INTERVAL_MS));
-    }
-    /* eslint-enable no-await-in-loop */
-  }
+    // Update counter (first shot becomes 1)
+    shotCounter += 1;
+    document.getElementById('shotCount').textContent = String(shotCounter);
 
-  statusEl.textContent = `保存完了: ${currentLabel} に ${saved} 枚`;
+  } catch (e) {
+    statusEl.textContent = `保存エラー: ${e.message || e}`;
+  }
 }
 
-/***** Start camera *****/
-async function start() {
-  document.getElementById('err').textContent = '';
-  if (!videoEl || !videoEl.srcObject) {
-    try {
-      await setupCamera();
-      document.getElementById('status').textContent = 'カメラ起動中…OK';
-    } catch (e) {
-      document.getElementById('err').textContent = 'カメラ起動エラー: ' + (e?.message || e);
-    }
-  } else {
-    document.getElementById('status').textContent = 'カメラ準備完了';
-  }
+/***** Restart counter *****/
+function restartCounter() {
+  shotCounter = 0;
+  document.getElementById('shotCount').textContent = '0';
+  document.getElementById('saveStatus').textContent = 'カウンターをリセットしました。';
 }
 
 /***** Hotkeys *****/
 function onKey(e) {
   if (e.repeat) return;
-  if (e.code === 'Digit1') { setActiveLabel('Snyders'); }
-  if (e.code === 'Digit2') { setActiveLabel('Big Lot'); }
-  if (e.code === 'Digit3') { setActiveLabel('C Press'); }
-  if (e.code === 'Space')  { e.preventDefault(); burstCapture(); }
+  if (e.code === 'Digit1') setActiveLabel('Snyders');
+  if (e.code === 'Digit2') setActiveLabel('Big Lot');
+  if (e.code === 'Digit3') setActiveLabel('C Press');
+  if (e.key.toLowerCase() === 'c' && currentLabel === 'Snyders') setActiveSub('C');
+  if (e.key.toLowerCase() === 'd' && currentLabel === 'Snyders') setActiveSub('D');
+  if (e.key.toLowerCase() === 'e' && currentLabel === 'Snyders') setActiveSub('E');
+  if (e.code === 'Space') { e.preventDefault(); saveOneShot(); }
 }
 
 /***** Wire up *****/
 window.addEventListener('DOMContentLoaded', async () => {
+  // Camera auto-start
+  try { await setupCamera(); } catch (e) {
+    document.getElementById('err').textContent = 'カメラ起動エラー: ' + (e?.message || e);
+  }
+
   // Buttons
   document.getElementById('chooseFolderBtn').addEventListener('click', chooseBaseFolder);
-  document.getElementById('startBtn').addEventListener('click', start);
-  document.getElementById('captureBtn').addEventListener('click', burstCapture);
+  document.getElementById('captureBtn').addEventListener('click', saveOneShot);
+  document.getElementById('restartBtn').addEventListener('click', restartCounter);
 
-  // Label buttons
+  // Label selection
   document.getElementById('btnSnyders').addEventListener('click', () => setActiveLabel('Snyders'));
   document.getElementById('btnBigLot').addEventListener('click',  () => setActiveLabel('Big Lot'));
   document.getElementById('btnCPress').addEventListener('click',  () => setActiveLabel('C Press'));
 
+  // Sub selection (only visible when Snyders is selected)
+  document.getElementById('btnC').addEventListener('click', () => setActiveSub('C'));
+  document.getElementById('btnD').addEventListener('click', () => setActiveSub('D'));
+  document.getElementById('btnE').addEventListener('click', () => setActiveSub('E'));
+
   // Hotkeys
   window.addEventListener('keydown', onKey);
-
-  // Auto-start camera for convenience
-  await start();
 });
