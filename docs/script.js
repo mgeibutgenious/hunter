@@ -51,11 +51,21 @@ function yyyymmdd_HHMMSS() {
 function captureFrameToBlob() {
   return new Promise((resolve) => {
     const canvas = document.getElementById('captureCanvas');
-    const w = videoEl.videoWidth, h = videoEl.videoHeight;
-    canvas.width = w; canvas.height = h;
+    const vw = videoEl.videoWidth;
+    const vh = videoEl.videoHeight;
+
+    // Find the square region (center crop)
+    const side = Math.min(vw, vh);
+    const sx = (vw - side) / 2;
+    const sy = (vh - side) / 2;
+
+    canvas.width = side;
+    canvas.height = side;
+
     const ctx = canvas.getContext('2d');
-    ctx.drawImage(videoEl, 0, 0, w, h);
-    canvas.toBlob(b => resolve(b), 'image/png', 0.92);
+    ctx.drawImage(videoEl, sx, sy, side, side, 0, 0, side, side);
+
+    canvas.toBlob((b) => resolve(b), 'image/png', 0.92);
   });
 }
 
@@ -203,3 +213,4 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Hotkeys
   window.addEventListener('keydown', onKey);
 });
+
