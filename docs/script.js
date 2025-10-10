@@ -1,78 +1,193 @@
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Dataset Collector</title>
-  <style>
-    *{box-sizing:border-box}
-    body{display:flex;flex-direction:column;align-items:center;gap:12px;margin:0;padding:16px;font-family:Arial,sans-serif;background:#f5f5f5;color:#111}
-    h1{margin:8px 0 0;font-size:1.6em}
+/***** Config *****/
+const INPUT_SIZE = 224;       // not used for saving; only if you later add ML
+const LABELS = ['Snyders', 'Big Lot', 'C Press'];
 
-    .video-wrap{position:relative;width:90vw;height:90vw;max-width:400px;max-height:400px}
-    video{
-      position:absolute; inset:0; width:100%; height:100%;
-      border:2px solid #444; border-radius:10px; object-fit:cover; background:#111;
+// Burst settings
+const BURST_COUNT = 5;        // number of frames per burst
+const BURST_INTERVAL_MS = 150; // delay between frames in a burst
+
+/***** State *****/
+let videoEl = null;
+let baseDirHandle = null;
+let currentLabel = null;
+let burstCounter = 0; // shown in UI; increments each burst (1,2,3,...)
+
+/***** Camera *****/
+async function setupCamera() {
+  const el = document.getElementById('webcam');
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: 'environment' }, audio: false
+  });
+  el.srcObject = stream;
+  await new Promise(res => el.onloadedmetadata = () => res());
+  await el.play();
+  videoEl = el;
+}
+
+/***** Helpers *****/
+function yyyymmdd_HHMMSS() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm   = String(d.getMonth()+1).padStart(2,'0');
+  const dd   = String(d.getDate()).padStart(2,'0');
+  const hh   = String(d.getHours()).padStart(2,'0');
+  const mi   = String(d.getMinutes()).padStart(2,'0');
+  const ss   = String(d.getSeconds()).padStart(2,'0');
+  return `${yyyy}${mm}${dd}_${hh}${mi}${ss}`;
+}
+const pad3 = n => String(n).padStart(3,'0');
+
+function captureFrameToBlob() {
+  return new Promise((resolve) => {
+    const canvas = document.getElementById('captureCanvas');
+    const w = videoEl.videoWidth, h = videoEl.videoHeight;
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(videoEl, 0, 0, w, h);
+    canvas.toBlob(b => resolve(b), 'image/png', 0.92);
+  });
+}
+
+async function ensureSubdir(parent, name) {
+  return await parent.getDirectoryHandle(name, { create: true });
+}
+
+async function writeBlobTo(dirHandle, filename, blob) {
+  const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(blob);
+  await writable.close();
+}
+
+function downloadFallback(filename, blob) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/***** Folder selection *****/
+async function chooseBaseFolder() {
+  if (!window.showDirectoryPicker) {
+    document.getElementById('saveStatus').textContent =
+      'ブラウザがフォルダ保存に未対応です（Chrome/Edge 推奨）。ダウンロード保存に切替えます。';
+    document.getElementById('folderChosen').textContent = 'ダウンロード保存';
+    baseDirHandle = null;
+    return;
+  }
+  baseDirHandle = await window.showDirectoryPicker();
+  document.getElementById('folderChosen').textContent = '選択済み';
+  document.getElementById('saveStatus').textContent   = '保存先を設定しました。';
+}
+
+/***** Label selection *****/
+function setActiveLabel(label) {
+  currentLabel = label;
+  document.getElementById('activeLabel').textContent = `選択: ${label}`;
+
+  // UI highlight for buttons
+  for (const [id, name] of [['btnSnyders','Snyders'],['btnBigLot','Big Lot'],['btnCPress','C Press']]) {
+    const b = document.getElementById(id);
+    if (name === label) b.classList.add('selected'); else b.classList.remove('selected');
+  }
+}
+
+/***** Burst capture *****/
+async function burstCapture() {
+  const statusEl = document.getElementById('saveStatus');
+  statusEl.textContent = '';
+
+  if (!videoEl) {
+    statusEl.textContent = 'カメラが未起動です。「▶️」を押してください。';
+    return;
+  }
+  if (!currentLabel) {
+    statusEl.textContent = 'ラベルを選択してください（Snyders / Big Lot / C Press）。';
+    return;
+  }
+
+  // Increment burst counter and update UI (first burst -> 1)
+  burstCounter += 1;
+  document.getElementById('burstCount').textContent = String(burstCounter);
+
+  // Make sure the per-label folder exists (or prepare fallback)
+  let labelDir = null;
+  if (baseDirHandle) {
+    const root = baseDirHandle;
+    labelDir = await ensureSubdir(root, currentLabel);
+  }
+
+  const timestampBase = yyyymmdd_HHMMSS();
+  let saved = 0;
+
+  for (let i = 0; i < BURST_COUNT; i++) {
+    /* eslint-disable no-await-in-loop */
+    const blob = await captureFrameToBlob();
+
+    const filename = `${timestampBase}_${currentLabel}_${pad3(i+1)}.png`;
+    try {
+      if (labelDir) {
+        await writeBlobTo(labelDir, filename, blob);
+      } else {
+        downloadFallback(`${currentLabel}_${filename}`, blob);
+      }
+      saved++;
+      statusEl.textContent = `保存中… ${saved}/${BURST_COUNT}`;
+    } catch (e) {
+      statusEl.textContent = `保存エラー: ${e.message || e}`;
     }
 
-    .panel{width:90vw;max-width:480px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:12px}
-    .muted{color:#6b7280;font-size:12px;margin-top:6px}
+    if (i < BURST_COUNT - 1) {
+      await new Promise(r => setTimeout(r, BURST_INTERVAL_MS));
+    }
+    /* eslint-enable no-await-in-loop */
+  }
 
-    .rows{display:flex;flex-direction:column;gap:10px;margin-top:8px}
-    .row{display:flex;gap:8px;flex-wrap:wrap}
+  statusEl.textContent = `保存完了: ${currentLabel} に ${saved} 枚`;
+}
 
-    /* Buttons */
-    button{appearance:none;border:none;cursor:pointer;padding:10px 14px;border-radius:10px;
-           font-size:14px;line-height:1;background:#fff;border:1px solid #e5e7eb;color:#111}
-    .icon{width:56px;height:44px;font-size:22px;padding:0}
+/***** Start camera *****/
+async function start() {
+  document.getElementById('err').textContent = '';
+  if (!videoEl || !videoEl.srcObject) {
+    try {
+      await setupCamera();
+      document.getElementById('status').textContent = 'カメラ起動中…OK';
+    } catch (e) {
+      document.getElementById('err').textContent = 'カメラ起動エラー: ' + (e?.message || e);
+    }
+  } else {
+    document.getElementById('status').textContent = 'カメラ準備完了';
+  }
+}
 
-    /* Label buttons */
-    .label-btn{min-width:96px}
-    .selected{background:#111827;color:#fff;border-color:#111827}
+/***** Hotkeys *****/
+function onKey(e) {
+  if (e.repeat) return;
+  if (e.code === 'Digit1') { setActiveLabel('Snyders'); }
+  if (e.code === 'Digit2') { setActiveLabel('Big Lot'); }
+  if (e.code === 'Digit3') { setActiveLabel('C Press'); }
+  if (e.code === 'Space')  { e.preventDefault(); burstCapture(); }
+}
 
-    /* Info badges */
-    .badge{display:inline-block;padding:4px 8px;border-radius:8px;background:#f3f4f6;font-size:12px}
-    .badge-strong{background:#ecfeff;border:1px solid #bae6fd}
+/***** Wire up *****/
+window.addEventListener('DOMContentLoaded', async () => {
+  // Buttons
+  document.getElementById('chooseFolderBtn').addEventListener('click', chooseBaseFolder);
+  document.getElementById('startBtn').addEventListener('click', start);
+  document.getElementById('captureBtn').addEventListener('click', burstCapture);
 
-    #captureCanvas{display:none}
-  </style>
-</head>
-<body>
-  <h1>Dataset Collector</h1>
+  // Label buttons
+  document.getElementById('btnSnyders').addEventListener('click', () => setActiveLabel('Snyders'));
+  document.getElementById('btnBigLot').addEventListener('click',  () => setActiveLabel('Big Lot'));
+  document.getElementById('btnCPress').addEventListener('click',  () => setActiveLabel('C Press'));
 
-  <div class="video-wrap">
-    <video id="webcam" autoplay playsinline muted></video>
-  </div>
+  // Hotkeys
+  window.addEventListener('keydown', onKey);
 
-  <div class="panel">
-    <!-- Row 1: 保存ファイル -->
-    <div class="row">
-      <button id="chooseFolderBtn">保存ファイル</button>
-      <span id="folderChosen" class="badge">未選択</span>
-      <span id="burstBadge" class="badge badge-strong">Burst: <span id="burstCount">0</span></span>
-    </div>
-
-    <!-- Row 2: ▶️ and 📸 (emoji only) -->
-    <div class="row">
-      <button id="startBtn"   class="icon" title="開始">▶️</button>
-      <button id="captureBtn" class="icon" title="キャプチャ（バースト）">📸</button>
-      <span class="muted">（Space で📸 / 1=Snyders, 2=Big Lot, 3=C Press）</span>
-    </div>
-
-    <!-- Row 3: Label selection (sticky until changed) -->
-    <div class="row">
-      <button id="btnSnyders" class="label-btn">Snyders</button>
-      <button id="btnBigLot"  class="label-btn">Big Lot</button>
-      <button id="btnCPress"  class="label-btn">C Press</button>
-      <span id="activeLabel" class="badge">未選択</span>
-    </div>
-
-    <div id="status" class="muted"></div>
-    <div id="err" class="muted"></div>
-    <div id="saveStatus" class="muted"></div>
-  </div>
-
-  <canvas id="captureCanvas"></canvas>
-  <script src="script.js" defer></script>
-</body>
-</html>
+  // Auto-start camera for convenience
+  await start();
+});
