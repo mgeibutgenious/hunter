@@ -1,5 +1,5 @@
 /***** Config *****/
-const TARGET_SIZE = 512;           // export size (square). 224 for ML, 512/1024 for quality.
+const TARGET_SIZE = 1024;           // export size (square). 224 for ML, 512/1024 for quality.
 const HOLD_STILL_MS = 220;         // tiny delay before capture to let AF/AE settle
 
 const PREVIEW_CONSTRAINTS = {
@@ -258,3 +258,4 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Hotkeys
   window.addEventListener('keydown', onKey);
 });
+
