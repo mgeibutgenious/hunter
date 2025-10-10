@@ -1,26 +1,25 @@
 /***** Config *****/
-// Saved image size (square). Change to 224 for ML-ready small files, or 1024 for high quality.
-const TARGET_SIZE = 512;
+const TARGET_SIZE = 512;           // export size (square). 224 for ML, 512/1024 for quality.
+const HOLD_STILL_MS = 220;         // tiny delay before capture to let AF/AE settle
 
-// Optional: request higher preview size as well
 const PREVIEW_CONSTRAINTS = {
   video: {
     facingMode: { ideal: 'environment' },
     width:  { ideal: 1920 },
     height: { ideal: 1080 },
-    // aspectRatio: { ideal: 1.0 }, // uncomment if you prefer near-square preview
+    frameRate: { ideal: 30, max: 30 },
   },
   audio: false
 };
 
 const LABELS = ['Snyders', 'Big Lot', 'C Press'];
-const SNYDERS_SUBS = ['C','D','E']; // only when Snyders selected
+const SNYDERS_SUBS = ['C','D','E'];
 
 /***** State *****/
 let videoEl = null;
 let baseDirHandle = null;
-let currentLabel = null;   // 'Snyders' | 'Big Lot' | 'C Press'
-let currentSub   = null;   // 'C' | 'D' | 'E' | null
+let currentLabel = null;
+let currentSub   = null;
 let shotCounter  = 0;
 
 /***** Camera *****/
@@ -31,6 +30,19 @@ async function setupCamera() {
   await new Promise(res => el.onloadedmetadata = () => res());
   await el.play();
   videoEl = el;
+
+  // Try to improve focus/exposure continuity if supported
+  try {
+    const track = stream.getVideoTracks()[0];
+    await track.applyConstraints({
+      advanced: [
+        { focusMode: 'continuous' },
+        { exposureMode: 'continuous' },
+        { whiteBalanceMode: 'continuous' }
+      ]
+    });
+  } catch (_) { /* some devices/browsers don't support these */ }
+
   document.getElementById('status').textContent = 'カメラ準備完了';
 }
 
@@ -61,7 +73,7 @@ function yyyymmdd_HHMMSS() {
 }
 
 async function ensureSubdir(parent, name) {
-  return await parent.getDirectoryHandle(name, { create: true });
+  return parent.getDirectoryHandle(name, { create: true });
 }
 async function writeBlobTo(dirHandle, filename, blob) {
   const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
@@ -76,65 +88,76 @@ function downloadFallback(filename, blob) {
   URL.revokeObjectURL(url);
 }
 
-/***** Capture methods *****/
-// Preferred: true still-photo capture via ImageCapture API, then center-crop to square TARGET_SIZE
-async function capturePhotoSquareBlob() {
+/***** High-quality square capture *****/
+// Draw helper with high-quality resampling
+function drawSquareHighQuality(ctx, source, sx, sy, sSize, dstSize) {
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(source, sx, sy, sSize, sSize, 0, 0, dstSize, dstSize);
+}
+
+// Preferred: true still-photo (sharpest). Fallback to grabFrame(), then video.
+async function captureSquareBlobHQ() {
+  // 1) short settle delay so AF/AE can lock
+  if (HOLD_STILL_MS > 0) await new Promise(r => setTimeout(r, HOLD_STILL_MS));
+
   const track = videoEl?.srcObject?.getVideoTracks?.()[0];
+  const canvas = document.getElementById('captureCanvas');
+  canvas.width = TARGET_SIZE; canvas.height = TARGET_SIZE;
+  const ctx = canvas.getContext('2d');
+
+  // Try still-photo
   if (track && 'ImageCapture' in window) {
     try {
-      const imageCapture = new ImageCapture(track);
-      const photoBlob = await imageCapture.takePhoto(); // full-res still
+      const ic = new ImageCapture(track);
+      const photoBlob = await ic.takePhoto();                           // full-res still
+      // Use createImageBitmap resize for high-quality downscale + crop math
       const bitmap = await createImageBitmap(photoBlob);
       const w = bitmap.width, h = bitmap.height;
       const side = Math.min(w, h);
       const sx = (w - side) / 2;
       const sy = (h - side) / 2;
-
-      const canvas = document.getElementById('captureCanvas');
-      canvas.width = TARGET_SIZE; canvas.height = TARGET_SIZE;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(bitmap, sx, sy, side, side, 0, 0, TARGET_SIZE, TARGET_SIZE);
-
       document.getElementById('modeBadge').textContent = 'mode: still-photo';
+      drawSquareHighQuality(ctx, bitmap, sx, sy, side, TARGET_SIZE);
       return await new Promise(res => canvas.toBlob(b => res(b), 'image/png', 0.92));
     } catch (e) {
-      // fall back if still capture fails for any reason
-      console.warn('ImageCapture failed, falling back to preview frame:', e);
+      console.warn('takePhoto failed, trying grabFrame:', e);
+      // Try grabFrame next
+      try {
+        const ic2 = new ImageCapture(track);
+        const frameBitmap = await ic2.grabFrame();                      // high-res video frame
+        const w = frameBitmap.width, h = frameBitmap.height;
+        const side = Math.min(w, h);
+        const sx = (w - side) / 2;
+        const sy = (h - side) / 2;
+        document.getElementById('modeBadge').textContent = 'mode: grabFrame';
+        drawSquareHighQuality(ctx, frameBitmap, sx, sy, side, TARGET_SIZE);
+        return await new Promise(res => canvas.toBlob(b => res(b), 'image/png', 0.92));
+      } catch (e2) {
+        console.warn('grabFrame failed, falling back to <video> frame:', e2);
+      }
     }
   }
-  // Fallback: capture from the preview video frame (also center-cropped to TARGET_SIZE)
-  return await capturePreviewSquareBlob();
-}
 
-// Fallback: capture from preview frame (center-crop to square TARGET_SIZE)
-function capturePreviewSquareBlob() {
-  return new Promise((resolve) => {
-    const vw = videoEl.videoWidth, vh = videoEl.videoHeight;
-    const side = Math.min(vw, vh);
-    const sx = (vw - side) / 2;
-    const sy = (vh - side) / 2;
-
-    const canvas = document.getElementById('captureCanvas');
-    canvas.width = TARGET_SIZE; canvas.height = TARGET_SIZE;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(videoEl, sx, sy, side, side, 0, 0, TARGET_SIZE, TARGET_SIZE);
-
-    document.getElementById('modeBadge').textContent = 'mode: preview';
-    canvas.toBlob((b) => resolve(b), 'image/png', 0.92);
-  });
+  // Final fallback: draw from <video> element
+  const vw = videoEl.videoWidth, vh = videoEl.videoHeight;
+  const side = Math.min(vw, vh);
+  const sx = (vw - side) / 2;
+  const sy = (vh - side) / 2;
+  document.getElementById('modeBadge').textContent = 'mode: preview';
+  drawSquareHighQuality(ctx, videoEl, sx, sy, side, TARGET_SIZE);
+  return await new Promise(res => canvas.toBlob(b => res(b), 'image/png', 0.92));
 }
 
 /***** Label selection *****/
 function setActiveLabel(label) {
   currentLabel = label;
   document.getElementById('activeLabel').textContent = `選択: ${label}`;
-  // highlight
   const map = { Snyders:'btnSnyders', 'Big Lot':'btnBigLot', 'C Press':'btnCPress' };
   for (const [lbl, id] of Object.entries(map)) {
     const b = document.getElementById(id);
     if (lbl === label) b.classList.add('selected'); else b.classList.remove('selected');
   }
-  // Sub options
   const subRow = document.getElementById('snydersSubRow');
   if (label === 'Snyders') {
     subRow.style.display = '';
@@ -142,12 +165,11 @@ function setActiveLabel(label) {
     subRow.style.display = 'none';
     currentSub = null;
     document.getElementById('activeSub').textContent = 'サブ: なし';
-    // clear small button highlights
     ['btnC','btnD','btnE'].forEach(id => document.getElementById(id).classList.remove('selected'));
   }
 }
 function setActiveSub(sub) {
-  currentSub = sub; // 'C' | 'D' | 'E'
+  currentSub = sub;
   document.getElementById('activeSub').textContent = `サブ: ${sub}`;
   const ids = { btnC:'C', btnD:'D', btnE:'E' };
   Object.entries(ids).forEach(([id,val])=>{
@@ -168,32 +190,25 @@ async function saveOneShot() {
     return;
   }
 
-  // prefer still-photo; fallback to preview frame
-  const blob = await capturePhotoSquareBlob();
+  const blob = await captureSquareBlobHQ();
 
   const ts   = yyyymmdd_HHMMSS();
   let folderParts = [currentLabel];
   if (currentLabel === 'Snyders' && currentSub) folderParts.push(currentSub);
-
   const filename = `${ts}_${currentLabel}${currentSub ? '_' + currentSub : ''}_${TARGET_SIZE}sq.png`;
 
   try {
     if (baseDirHandle) {
-      // Create nested directories
       let dir = baseDirHandle;
       for (const part of folderParts) dir = await ensureSubdir(dir, part);
       await writeBlobTo(dir, filename, blob);
       statusEl.textContent = `保存しました: ${folderParts.join('/')}/${filename}`;
     } else {
-      // Fallback: encode path in filename
       downloadFallback(`${folderParts.join('_')}_${filename}`, blob);
       statusEl.textContent = `ダウンロードしました: ${folderParts.join('/')}/${filename}`;
     }
-
-    // Update counter (first shot becomes 1)
     shotCounter += 1;
     document.getElementById('shotCount').textContent = String(shotCounter);
-
   } catch (e) {
     statusEl.textContent = `保存エラー: ${e.message || e}`;
   }
@@ -235,7 +250,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('btnBigLot').addEventListener('click',  () => setActiveLabel('Big Lot'));
   document.getElementById('btnCPress').addEventListener('click',  () => setActiveLabel('C Press'));
 
-  // Sub selection (only visible when Snyders is selected)
+  // Snyders sub
   document.getElementById('btnC').addEventListener('click', () => setActiveSub('C'));
   document.getElementById('btnD').addEventListener('click', () => setActiveSub('D'));
   document.getElementById('btnE').addEventListener('click', () => setActiveSub('E'));
