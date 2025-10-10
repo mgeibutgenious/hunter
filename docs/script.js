@@ -1,20 +1,32 @@
 /***** Config *****/
+// Saved image size (square). Change to 224 for ML-ready small files, or 1024 for high quality.
+const TARGET_SIZE = 512;
+
+// Optional: request higher preview size as well
+const PREVIEW_CONSTRAINTS = {
+  video: {
+    facingMode: { ideal: 'environment' },
+    width:  { ideal: 1920 },
+    height: { ideal: 1080 },
+    // aspectRatio: { ideal: 1.0 }, // uncomment if you prefer near-square preview
+  },
+  audio: false
+};
+
 const LABELS = ['Snyders', 'Big Lot', 'C Press'];
-const SNYDERS_SUBS = ['C','D','E']; // appears only when Snyders is active
+const SNYDERS_SUBS = ['C','D','E']; // only when Snyders selected
 
 /***** State *****/
 let videoEl = null;
 let baseDirHandle = null;
 let currentLabel = null;   // 'Snyders' | 'Big Lot' | 'C Press'
-let currentSub   = null;   // 'C' | 'D' | 'E' | null  (only used for Snyders)
-let shotCounter  = 0;      // UI counter (1,2,3,...)
+let currentSub   = null;   // 'C' | 'D' | 'E' | null
+let shotCounter  = 0;
 
 /***** Camera *****/
 async function setupCamera() {
   const el = document.getElementById('webcam');
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: 'environment' }, audio: false
-  });
+  const stream = await navigator.mediaDevices.getUserMedia(PREVIEW_CONSTRAINTS);
   el.srcObject = stream;
   await new Promise(res => el.onloadedmetadata = () => res());
   await el.play();
@@ -48,43 +60,68 @@ function yyyymmdd_HHMMSS() {
   return `${yyyy}${mm}${dd}_${hh}${mi}${ss}`;
 }
 
-function captureFrameToBlob() {
-  return new Promise((resolve) => {
-    const canvas = document.getElementById('captureCanvas');
-    const vw = videoEl.videoWidth;
-    const vh = videoEl.videoHeight;
-
-    // Find the square region (center crop)
-    const side = Math.min(vw, vh);
-    const sx = (vw - side) / 2;
-    const sy = (vh - side) / 2;
-
-    canvas.width = side;
-    canvas.height = side;
-
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(videoEl, sx, sy, side, side, 0, 0, side, side);
-
-    canvas.toBlob((b) => resolve(b), 'image/png', 0.92);
-  });
-}
-
 async function ensureSubdir(parent, name) {
   return await parent.getDirectoryHandle(name, { create: true });
 }
-
 async function writeBlobTo(dirHandle, filename, blob) {
   const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
   const writable = await fileHandle.createWritable();
   await writable.write(blob);
   await writable.close();
 }
-
 function downloadFallback(filename, blob) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a'); a.href = url; a.download = filename;
   document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
+}
+
+/***** Capture methods *****/
+// Preferred: true still-photo capture via ImageCapture API, then center-crop to square TARGET_SIZE
+async function capturePhotoSquareBlob() {
+  const track = videoEl?.srcObject?.getVideoTracks?.()[0];
+  if (track && 'ImageCapture' in window) {
+    try {
+      const imageCapture = new ImageCapture(track);
+      const photoBlob = await imageCapture.takePhoto(); // full-res still
+      const bitmap = await createImageBitmap(photoBlob);
+      const w = bitmap.width, h = bitmap.height;
+      const side = Math.min(w, h);
+      const sx = (w - side) / 2;
+      const sy = (h - side) / 2;
+
+      const canvas = document.getElementById('captureCanvas');
+      canvas.width = TARGET_SIZE; canvas.height = TARGET_SIZE;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, sx, sy, side, side, 0, 0, TARGET_SIZE, TARGET_SIZE);
+
+      document.getElementById('modeBadge').textContent = 'mode: still-photo';
+      return await new Promise(res => canvas.toBlob(b => res(b), 'image/png', 0.92));
+    } catch (e) {
+      // fall back if still capture fails for any reason
+      console.warn('ImageCapture failed, falling back to preview frame:', e);
+    }
+  }
+  // Fallback: capture from the preview video frame (also center-cropped to TARGET_SIZE)
+  return await capturePreviewSquareBlob();
+}
+
+// Fallback: capture from preview frame (center-crop to square TARGET_SIZE)
+function capturePreviewSquareBlob() {
+  return new Promise((resolve) => {
+    const vw = videoEl.videoWidth, vh = videoEl.videoHeight;
+    const side = Math.min(vw, vh);
+    const sx = (vw - side) / 2;
+    const sy = (vh - side) / 2;
+
+    const canvas = document.getElementById('captureCanvas');
+    canvas.width = TARGET_SIZE; canvas.height = TARGET_SIZE;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(videoEl, sx, sy, side, side, 0, 0, TARGET_SIZE, TARGET_SIZE);
+
+    document.getElementById('modeBadge').textContent = 'mode: preview';
+    canvas.toBlob((b) => resolve(b), 'image/png', 0.92);
+  });
 }
 
 /***** Label selection *****/
@@ -105,18 +142,17 @@ function setActiveLabel(label) {
     subRow.style.display = 'none';
     currentSub = null;
     document.getElementById('activeSub').textContent = 'サブ: なし';
+    // clear small button highlights
+    ['btnC','btnD','btnE'].forEach(id => document.getElementById(id).classList.remove('selected'));
   }
 }
-
 function setActiveSub(sub) {
   currentSub = sub; // 'C' | 'D' | 'E'
   document.getElementById('activeSub').textContent = `サブ: ${sub}`;
-  // small buttons highlight
-  const ids = ['btnC','btnD','btnE'];
-  const val = { btnC:'C', btnD:'D', btnE:'E' };
-  ids.forEach(id=>{
+  const ids = { btnC:'C', btnD:'D', btnE:'E' };
+  Object.entries(ids).forEach(([id,val])=>{
     const el = document.getElementById(id);
-    if (val[id] === sub) el.classList.add('selected'); else el.classList.remove('selected');
+    if (val === sub) el.classList.add('selected'); else el.classList.remove('selected');
   });
 }
 
@@ -125,27 +161,21 @@ async function saveOneShot() {
   const statusEl = document.getElementById('saveStatus');
   statusEl.textContent = '';
 
-  if (!videoEl) {
-    statusEl.textContent = 'カメラが未起動です。';
-    return;
-  }
-  if (!currentLabel) {
-    statusEl.textContent = 'ラベルを選択してください。';
-    return;
-  }
+  if (!videoEl) { statusEl.textContent = 'カメラが未起動です。'; return; }
+  if (!currentLabel) { statusEl.textContent = 'ラベルを選択してください。'; return; }
   if (currentLabel === 'Snyders' && !currentSub) {
     statusEl.textContent = 'Snyders のサブ（C/D/E）を選択してください。';
     return;
   }
 
-  const blob = await captureFrameToBlob();
-  const ts   = yyyymmdd_HHMMSS();
+  // prefer still-photo; fallback to preview frame
+  const blob = await capturePhotoSquareBlob();
 
-  // Folder path + filename
+  const ts   = yyyymmdd_HHMMSS();
   let folderParts = [currentLabel];
   if (currentLabel === 'Snyders' && currentSub) folderParts.push(currentSub);
 
-  const filename = `${ts}_${currentLabel}${currentSub ? '_' + currentSub : ''}.png`;
+  const filename = `${ts}_${currentLabel}${currentSub ? '_' + currentSub : ''}_${TARGET_SIZE}sq.png`;
 
   try {
     if (baseDirHandle) {
@@ -185,7 +215,7 @@ function onKey(e) {
   if (e.key.toLowerCase() === 'c' && currentLabel === 'Snyders') setActiveSub('C');
   if (e.key.toLowerCase() === 'd' && currentLabel === 'Snyders') setActiveSub('D');
   if (e.key.toLowerCase() === 'e' && currentLabel === 'Snyders') setActiveSub('E');
-  if (e.code === 'Space') { e.preventDefault(); saveOneShot(); }
+  if (e.code === 'Space')  { e.preventDefault(); saveOneShot(); }
 }
 
 /***** Wire up *****/
@@ -213,4 +243,3 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Hotkeys
   window.addEventListener('keydown', onKey);
 });
-
