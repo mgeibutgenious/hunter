@@ -59,7 +59,7 @@
     <div class="row">
       <button id="captureBtn" class="icon" title="1枚保存">📸</button>
       <button id="restartBtn" class="icon" title="カウンターをリセット">🔄</button>
-      <span class="muted">（1=Snyders, 2=Big Lot, 3=C Press / C・D・Eは Snyders 選択時）</span>
+      <span class="muted">（1=Snyders, 2=Big Lot, 3=C Press / A・C・D・G はキー対応）</span>
     </div>
 
     <!-- Row 3: Label selection -->
@@ -70,11 +70,15 @@
       <span id="activeLabel" class="badge">未選択</span>
     </div>
 
-    <!-- Row 4: Snyders sub-options (C/D/E) -->
+    <!-- Row 4: Snyders sub-options -->
     <div class="row" id="snydersSubRow" style="display:none">
-      <button id="btnC" class="small">C</button>
-      <button id="btnD" class="small">D</button>
-      <button id="btnE" class="small">E</button>
+      <button id="btnA"     class="small">A</button>
+      <button id="btnC"     class="small">C</button>
+      <button id="btnD"     class="small">D</button>
+      <button id="btnG"     class="small">G</button>
+      <button id="btnSUS3"  class="small">SUS3</button>
+      <button id="btnSUS6"  class="small">SUS6</button>
+      <button id="btnOther" class="small">他</button>
       <span id="activeSub" class="badge">サブ: なし</span>
     </div>
 
