@@ -1,6 +1,6 @@
 /***** Config *****/
 const TARGET_SIZE = 1024;           // export size (square). 224 for ML, 512/1024 for quality.
-const HOLD_STILL_MS = 220;         // tiny delay before capture to let AF/AE settle
+const HOLD_STILL_MS = 220;          // tiny delay before capture to let AF/AE settle
 
 const PREVIEW_CONSTRAINTS = {
   video: {
@@ -13,7 +13,7 @@ const PREVIEW_CONSTRAINTS = {
 };
 
 const LABELS = ['Snyders', 'Big Lot', 'C Press'];
-const SNYDERS_SUBS = ['C','D','E'];
+const SNYDERS_SUBS = ['A', 'C', 'D', 'G', 'SUS3', 'SUS6', '他'];
 
 /***** State *****/
 let videoEl = null;
@@ -111,7 +111,6 @@ async function captureSquareBlobHQ() {
     try {
       const ic = new ImageCapture(track);
       const photoBlob = await ic.takePhoto();                           // full-res still
-      // Use createImageBitmap resize for high-quality downscale + crop math
       const bitmap = await createImageBitmap(photoBlob);
       const w = bitmap.width, h = bitmap.height;
       const side = Math.min(w, h);
@@ -156,7 +155,9 @@ function setActiveLabel(label) {
   const map = { Snyders:'btnSnyders', 'Big Lot':'btnBigLot', 'C Press':'btnCPress' };
   for (const [lbl, id] of Object.entries(map)) {
     const b = document.getElementById(id);
-    if (lbl === label) b.classList.add('selected'); else b.classList.remove('selected');
+    if (b) {
+      if (lbl === label) b.classList.add('selected'); else b.classList.remove('selected');
+    }
   }
   const subRow = document.getElementById('snydersSubRow');
   if (label === 'Snyders') {
@@ -165,15 +166,22 @@ function setActiveLabel(label) {
     subRow.style.display = 'none';
     currentSub = null;
     document.getElementById('activeSub').textContent = 'サブ: なし';
-    ['btnC','btnD','btnE'].forEach(id => document.getElementById(id).classList.remove('selected'));
+    ['btnA','btnC','btnD','btnG','btnSUS3','btnSUS6','btnOther'].forEach(id => {
+      const el = document.getElementById(id);
+      el && el.classList.remove('selected');
+    });
   }
 }
 function setActiveSub(sub) {
   currentSub = sub;
   document.getElementById('activeSub').textContent = `サブ: ${sub}`;
-  const ids = { btnC:'C', btnD:'D', btnE:'E' };
+  const ids = {
+    btnA:'A', btnC:'C', btnD:'D', btnG:'G',
+    btnSUS3:'SUS3', btnSUS6:'SUS6', btnOther:'他'
+  };
   Object.entries(ids).forEach(([id,val])=>{
     const el = document.getElementById(id);
+    if (!el) return;
     if (val === sub) el.classList.add('selected'); else el.classList.remove('selected');
   });
 }
@@ -186,7 +194,7 @@ async function saveOneShot() {
   if (!videoEl) { statusEl.textContent = 'カメラが未起動です。'; return; }
   if (!currentLabel) { statusEl.textContent = 'ラベルを選択してください。'; return; }
   if (currentLabel === 'Snyders' && !currentSub) {
-    statusEl.textContent = 'Snyders のサブ（C/D/E）を選択してください。';
+    statusEl.textContent = 'Snyders のサブ（A/C/D/G/SUS3/SUS6/他）を選択してください。';
     return;
   }
 
@@ -227,9 +235,17 @@ function onKey(e) {
   if (e.code === 'Digit1') setActiveLabel('Snyders');
   if (e.code === 'Digit2') setActiveLabel('Big Lot');
   if (e.code === 'Digit3') setActiveLabel('C Press');
-  if (e.key.toLowerCase() === 'c' && currentLabel === 'Snyders') setActiveSub('C');
-  if (e.key.toLowerCase() === 'd' && currentLabel === 'Snyders') setActiveSub('D');
-  if (e.key.toLowerCase() === 'e' && currentLabel === 'Snyders') setActiveSub('E');
+
+  // Sub hotkeys (Snyders): letters only for the alphabetic subs
+  if (currentLabel === 'Snyders') {
+    const k = e.key.toLowerCase();
+    if (k === 'a') setActiveSub('A');
+    if (k === 'c') setActiveSub('C');
+    if (k === 'd') setActiveSub('D');
+    if (k === 'g') setActiveSub('G');
+    // (No hotkeys for SUS3/SUS6/他 to avoid confusion—use the buttons)
+  }
+
   if (e.code === 'Space')  { e.preventDefault(); saveOneShot(); }
 }
 
@@ -251,11 +267,14 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('btnCPress').addEventListener('click',  () => setActiveLabel('C Press'));
 
   // Snyders sub
-  document.getElementById('btnC').addEventListener('click', () => setActiveSub('C'));
-  document.getElementById('btnD').addEventListener('click', () => setActiveSub('D'));
-  document.getElementById('btnE').addEventListener('click', () => setActiveSub('E'));
+  document.getElementById('btnA').addEventListener('click',     () => setActiveSub('A'));
+  document.getElementById('btnC').addEventListener('click',     () => setActiveSub('C'));
+  document.getElementById('btnD').addEventListener('click',     () => setActiveSub('D'));
+  document.getElementById('btnG').addEventListener('click',     () => setActiveSub('G'));
+  document.getElementById('btnSUS3').addEventListener('click',  () => setActiveSub('SUS3'));
+  document.getElementById('btnSUS6').addEventListener('click',  () => setActiveSub('SUS6'));
+  document.getElementById('btnOther').addEventListener('click', () => setActiveSub('他'));
 
   // Hotkeys
   window.addEventListener('keydown', onKey);
 });
-
